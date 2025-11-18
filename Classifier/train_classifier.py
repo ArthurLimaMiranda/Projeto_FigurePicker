@@ -41,23 +41,13 @@ def process_data(input_dir,categories):
     return np.asarray(data),np.asarray(labels)
 
 
-#=========CLASSIFIER=========
-
-# Definindo o modelo
-classifier = SVC()
-
-parameters =[{
-    'gamma':[0.01,0.001,0.0001],
-    'C':[1,10,100,1000]
-}]
-
-
 #=========METRICS=========
 
-def show_metrics(y_pred,y_test):
+def show_metrics(y_pred,y_test,score,display_time=10):
   '''Calcular a métrica de acurácia'''
 
-  print('{}% TP'.format(str(score*100)))
+
+  print(f"Acurácia: {score*100:.2f}%")
 
   # Calcular a matriz de confusão
   cm = confusion_matrix(y_test, y_pred)
@@ -69,28 +59,30 @@ def show_metrics(y_pred,y_test):
   plt.title('Matriz de Confusão')
   plt.xlabel('Predito')
   plt.ylabel('Real')
-  plt.show()
+  plt.show(block=False)
+  plt.pause(display_time) 
+  plt.close() 
 
 
 #=========SAVING=========
 
-def save_model(best_estimator,path_save):
-  '''Salva o modelo e os parâmetros'''
+def save_model(best_estimator, grid_search, path_save):
 
-  total_path = os.path.join(path_save,'melhor_modelo.pkl')
+    os.makedirs(path_save, exist_ok=True)
 
-  # Salvar o modelo
-  joblib.dump(best_estimator, total_path)
+    total_path = os.path.join(path_save, 'melhor_modelo.pkl')
 
-  # Salvar também os parâmetros e métricas
-  resultados = {
-      'best_params': grid_search.best_params_,
-      'best_score': grid_search.best_score_,
-      'best_estimator': 'melhor_modelo.pkl'
-  }
+    joblib.dump(best_estimator, total_path)
 
-  with open('resultados_gridsearch.json', 'w') as f:
-      json.dump(resultados, f, indent=4)
+    print(f'Salvando modelo...')
+
+    resultados = {
+        'best_params': grid_search.best_params_,
+        'best_score': float(grid_search.best_score_),
+        'model_file': 'melhor_modelo.pkl'
+    }
+
+    print(f'Modelo salvo em: {total_path}')
 
 if __name__ == '__main__':
 
@@ -104,7 +96,17 @@ if __name__ == '__main__':
     stratify = labels,
     random_state = SEED,
     shuffle =True
-)
+  )
+
+  #=========CLASSIFIER=========
+
+  # Definindo o modelo
+  classifier = SVC()
+
+  parameters =[{
+      'gamma':[0.01,0.001,0.0001],
+      'C':[1,10,100,1000]
+  }]
 
   grid_search = GridSearchCV(classifier,parameters)
 
@@ -119,9 +121,14 @@ if __name__ == '__main__':
   score = accuracy_score(y_test,y_pred)
 
   #Printando as métricas
-  show_metrics(y_pred,y_test)
+  show_metrics(y_pred, y_test, score,3) 
+
   #Salvando o modelo
-  save_model(best_estimator,'Data/')
+  #TODO:POR NUM .ENV DPS
+  PATH_SAVE = 'models/'
+  save_model(best_estimator, grid_search, PATH_SAVE)
+
+
 
 
 
