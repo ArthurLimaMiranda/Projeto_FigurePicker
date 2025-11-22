@@ -1,0 +1,8 @@
+names:
+- cube
+- sphere
+nc: 2
+path: c:\Users\bruna.cruz\Desktop\Projeto_FigurePicker\yolov11\dataset_filtered
+test: test/images
+train: train/images
+val: val/images
