@@ -1,0 +1,2 @@
+Mac ESP principal: a0:dd:6c:85:8a:b8
+Mac ESP secundária: a0:dd:6c:03:e7:b8

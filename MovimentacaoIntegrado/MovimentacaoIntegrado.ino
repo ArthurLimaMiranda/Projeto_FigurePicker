@@ -1,14 +1,16 @@
 #include <Arduino.h>
 
-//Motores
-#define IN1 32   // Motor A
-#define IN2 33   // Motor A
-#define IN3 13   // Motor B
-#define IN4 12   // Motor B
-#define IN5 15   // Motor C
-#define IN6 16   // Motor C
+// Definições dos pinos de direção - Ponte 1 (EIXO X - ESQUERDA/DIREITA)
+#define IN1 33   // Motor A - Sentido 1
+#define IN2 32   // Motor A - Sentido 2
+#define IN3 12   // Motor B - Sentido 1
+#define IN4 13   // Motor B - Sentido 2
 
-//Botões
+// Definições dos pinos de direção - Ponte 2 (EIXO Y - FRENTE/TRÁS)
+#define IN5 15   // Motor C - Sentido 1
+#define IN6 16   // Motor C - Sentido 2
+
+// Definições dos botões
 #define left 21
 #define right 18
 #define left_2 5
@@ -17,18 +19,21 @@
 #define front 22
 #define back 23
 
-//Encoders
-#define ENCODER_A 34  //Motor A - Eixo X
-#define ENCODER_C 14  //Motor C - Eixo Y
+// Pinos dos Encoders para cada motor (apenas canal A)
+#define ENCODER_A 34  // Encoder Motor A - Eixo X
+#define ENCODER_C 14  // Encoder Motor C - Eixo Y
 
 // Variáveis de controle de posição
 long targetPositionX = 0;
 long targetPositionY = 0;
 bool movingToTargetX = false;
 bool movingToTargetY = false;
+
+// Variáveis para reset
 bool resettingX = false;
 bool resettingY = false;
 
+// Variável para armazenar último movimento
 String lastCommand = "STOP";
 String lastPrintedCommand = "";
 
@@ -48,12 +53,17 @@ struct EncoderData {
   int* motorDirection;
 };
 
+// Instâncias dos encoders para motores A e C
 EncoderData encoderA = {0, 0, false, ' ', 0, ENCODER_A, &motorDirectionA};
 EncoderData encoderC = {0, 0, false, ' ', 0, ENCODER_C, &motorDirectionC};
 
 const unsigned long DEBOUNCE_TIME = 10;
 unsigned long lastButtonTime = 0;
 const unsigned long BUTTON_DEBOUNCE = 10;
+
+// Variáveis para controle de impressão
+bool buttonWasPressed = false;
+String currentMovement = "";
 
 // Protótipos das funções
 void IRAM_ATTR handleEncoderA();
@@ -62,6 +72,7 @@ void updateEncoder(EncoderData &encoder);
 void printEncoderStatus();
 void resetAllEncoders();
 void updateMotorDirections(int dirA, int dirB, int dirC);
+void autoTestSequence();
 void moveToPositionX(long position);
 void moveToPositionY(long position);
 void stopAllMotors();
@@ -78,6 +89,7 @@ void printMovement(String movement);
 void setup() {
   Serial.begin(115200);
   
+  // Configura botões
   pinMode(left, INPUT_PULLUP);
   pinMode(right, INPUT_PULLUP);
   pinMode(left_2, INPUT_PULLUP);
@@ -86,6 +98,7 @@ void setup() {
   pinMode(front, INPUT_PULLUP);
   pinMode(back, INPUT_PULLUP);
   
+  // Configura pinos de direção
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT);
@@ -93,15 +106,19 @@ void setup() {
   pinMode(IN5, OUTPUT);
   pinMode(IN6, OUTPUT);
   
+  // Configura pinos dos encoders
   pinMode(ENCODER_A, INPUT_PULLUP);
   pinMode(ENCODER_C, INPUT_PULLUP);
   
+  // Lê estado inicial dos encoders
   encoderA.estadoAnterior = digitalRead(ENCODER_A);
   encoderC.estadoAnterior = digitalRead(ENCODER_C);
   
+  // Configura interrupções dos encoders
   attachInterrupt(digitalPinToInterrupt(ENCODER_A), handleEncoderA, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENCODER_C), handleEncoderC, CHANGE);
 
+  // Para todos os motores inicialmente
   stopAllMotors();
   
   Serial.println("=== SISTEMA 3 MOTORES - EIXO X/Y ===");
@@ -111,13 +128,16 @@ void setup() {
   printHelp();
 }
 
-void loop() 
+void loop() {
+  // Controle por botões físicos
   handleButtons();
   
+  // Controle por serial
   handleSerialCommands();
   
+  // Verifica movimento para posição X
   if (movingToTargetX) {
-    if (abs(encoderA.contador - targetPositionX) <= 10) { // Margem de erro
+    if (abs(encoderA.contador - targetPositionX) <= 10) { // Margem de erro de 10 pulsos
       stopMotorsX();
       movingToTargetX = false;
       Serial.print("EIXO X chegou na posição: ");
@@ -125,8 +145,9 @@ void loop()
     }
   }
   
+  // Verifica movimento para posição Y
   if (movingToTargetY) {
-    if (abs(encoderC.contador - targetPositionY) <= 10) { // Margem de erro
+    if (abs(encoderC.contador - targetPositionY) <= 10) { // Margem de erro de 10 pulsos
       stopMotorY();
       movingToTargetY = false;
       Serial.print("EIXO Y chegou na posição: ");
@@ -134,6 +155,7 @@ void loop()
     }
   }
   
+  // Verifica reset X
   if (resettingX) {
     if (digitalRead(right) == LOW && digitalRead(right_2) == LOW) {
       stopMotorsX();
@@ -143,6 +165,7 @@ void loop()
     }
   }
   
+  // Verifica reset Y
   if (resettingY) {
     if (digitalRead(back) == LOW) {
       stopMotorY();
@@ -152,16 +175,14 @@ void loop()
     }
   }
 
-  if(encoderA.contadorAtualizado) {
-    printEncoderStatus();
-  }
-
   delay(10);
 }
 
+// Função para imprimir movimento
 void printMovement(String movement) {
   if (movement != lastPrintedCommand) {
     Serial.println(movement);
+    printEncoderStatus();
     lastPrintedCommand = movement;
   }
 }
@@ -171,7 +192,6 @@ void IRAM_ATTR handleEncoderA() { updateEncoder(encoderA); }
 void IRAM_ATTR handleEncoderC() { updateEncoder(encoderC); }
 
 void updateEncoder(EncoderData &encoder) {
-  // Debouncing
   unsigned long tempoAtual = micros();
   if (tempoAtual - encoder.ultimoTempoInterrupcao < DEBOUNCE_TIME) {
     return;
@@ -196,62 +216,60 @@ void updateEncoder(EncoderData &encoder) {
   encoder.estadoAnterior = estadoAtual;
 }
 
+// Função para mover eixo X para posição específica
 void moveToPositionX(long position) {
   targetPositionX = position;
   long currentPosition = encoderA.contador;
   
   if (currentPosition < position) {
-    // Precisa mover para direita
     moveRight();
     movingToTargetX = true;
     Serial.print("Movendo EIXO X para DIREITA - Alvo: ");
     Serial.println(position);
   } else if (currentPosition > position) {
-    // Precisa mover para esquerda
     moveLeft();
     movingToTargetX = true;
     Serial.print("Movendo EIXO X para ESQUERDA - Alvo: ");
     Serial.println(position);
   } else {
-    // Já está na posição
     stopMotorsX();
     Serial.println("EIXO X já está na posição desejada");
   }
 }
 
+// Função para mover eixo Y para posição específica
 void moveToPositionY(long position) {
   targetPositionY = position;
   long currentPosition = encoderC.contador;
   
   if (currentPosition < position) {
-    // Precisa mover para frente
     moveForward();
     movingToTargetY = true;
     Serial.print("Movendo EIXO Y para FRENTE - Alvo: ");
     Serial.println(position);
-  } else if (currentPosition > position) {
-    // Precisa mover para trás
+  } else if (currentPosition > position) 
     moveBackward();
     movingToTargetY = true;
     Serial.print("Movendo EIXO Y para TRÁS - Alvo: ");
     Serial.println(position);
   } else {
-    // Já está na posição
     stopMotorY();
     Serial.println("EIXO Y já está na posição desejada");
   }
 }
 
+// Função para reset do eixo X
 void resetX() {
   Serial.println("Iniciando reset EIXO X - Movendo para DIREITA até fim de curso");
   resettingX = true;
-  moveRight(); // Move para direita até encontrar os botões right e right_2
+  moveRight();
 }
 
+// Função para reset do eixo Y
 void resetY() {
   Serial.println("Iniciando reset EIXO Y - Movendo para TRÁS até fim de curso");
   resettingY = true;
-  moveBackward(); // Move para trás até encontrar o botão back
+  moveBackward();
 }
 
 // Função para atualizar as direções de todos os motores
@@ -290,7 +308,6 @@ void resetAllEncoders() {
 }
 
 void handleButtons() {
-  // Debouncing global
   if (millis() - lastButtonTime < BUTTON_DEBOUNCE) {
     return;
   }
@@ -300,13 +317,13 @@ void handleButtons() {
                          (digitalRead(right) == LOW && digitalRead(right_2) == LOW) ||
                          (digitalRead(front) == LOW) ||
                          (digitalRead(back) == LOW);
-  
+                         
   if (!anyButtonPressed) {
     buttonWasPressed = false;
     currentMovement = "";
     lastPrintedCommand = "";
   }
-
+  
   if(digitalRead(stop) == LOW){
     if (!buttonWasPressed || currentMovement != "STOP") {
       printMovement("PARANDO TODOS OS MOTORES");
@@ -429,7 +446,6 @@ void handleSerialCommands() {
 
         case 'z': case 'Z': // Resetar todos os encoders
           resetAllEncoders();
-          break;
 
         case 'r': case 'R': // Reset de eixos
           if (command.length() > 1) {
@@ -490,6 +506,7 @@ void printHelp() {
   Serial.println("GY<num> - Move EIXO Y para posição (ex: GY500)");
   Serial.println("RX - Reset EIXO X (move até fim de curso)");
   Serial.println("RY - Reset EIXO Y (move até fim de curso)");
+  Serial.println("M - Sequência de teste automático");
   Serial.println("P - Status dos encoders");
   Serial.println("Z - Resetar encoders (zerar contagem)");
   Serial.println();
@@ -511,6 +528,7 @@ void printStatus() {
   Serial.println("=========================");
 }
 
+// Função para parar todos os motores
 void stopAllMotors() {
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
@@ -518,10 +536,11 @@ void stopAllMotors() {
   digitalWrite(IN4, LOW);
   digitalWrite(IN5, LOW);
   digitalWrite(IN6, LOW);
-
+  
   updateMotorDirections(0, 0, 0);
 }
 
+// Função para parar apenas os motores do eixo X
 void stopMotorsX() {
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
@@ -532,6 +551,7 @@ void stopMotorsX() {
   motorDirectionB = 0;
 }
 
+// Função para parar apenas o motor do eixo Y
 void stopMotorY() {
   digitalWrite(IN5, LOW);
   digitalWrite(IN6, LOW);
@@ -539,7 +559,9 @@ void stopMotorY() {
   motorDirectionC = 0;
 }
 
+// Movimento EIXO X: ESQUERDA
 void moveLeft() {
+  // Motores A e B para esquerda
   digitalWrite(IN1, LOW);  digitalWrite(IN2, HIGH);
   digitalWrite(IN3, LOW);  digitalWrite(IN4, HIGH);
   
@@ -548,7 +570,9 @@ void moveLeft() {
   updateMotorDirections(-1, -1, 0);
 }
 
+// Movimento EIXO X: DIREITA
 void moveRight() {
+  // Motores A e B para direita
   digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
   digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
   
@@ -557,17 +581,21 @@ void moveRight() {
   updateMotorDirections(1, 1, 0);
 }
 
+// Movimento EIXO Y: FRENTE
 void moveForward() {
+  
   digitalWrite(IN5, HIGH); digitalWrite(IN6, LOW);
   
   stopMotorsX();
-
+  
   updateMotorDirections(0, 0, 1);
 }
 
+// Movimento EIXO Y: TRÁS
 void moveBackward() {
+  
   digitalWrite(IN5, LOW); digitalWrite(IN6, HIGH);
-
+  
   stopMotorsX();
   
   updateMotorDirections(0, 0, -1);
