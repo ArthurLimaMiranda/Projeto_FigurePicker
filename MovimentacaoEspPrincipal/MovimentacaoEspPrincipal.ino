@@ -16,6 +16,11 @@ typedef struct struct_message {
 struct_message myData;
 struct_message receivedData;
 
+// Variável para controle de delay entre comandos
+unsigned long lastCommandTime = 0;
+const unsigned long COMMAND_DELAY = 10000;
+bool waitingForDelay = false;
+
 // Prototypes
 void OnDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status);
 void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len);
@@ -36,6 +41,7 @@ void sendCommandToSecondary(String cmd, long value = 0, long position = 0);
 void printEncoderStatus();
 void resetAllEncoders();
 void updateMotorDirections(int dirA, int dirB);
+bool canSendCommand();
 
 // Definições dos pinos de direção - (EIXO X - FREMTE/TRÁS)
 #define IN1 32   // Motor A - Sentido 1
@@ -87,6 +93,7 @@ String currentMovement = "";
 void OnDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
     Serial.print("Status do envio: ");
     Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Sucesso" : "Falha");
+    waitingForDelay = false;
 }
 
 void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len) {
@@ -99,13 +106,6 @@ void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingDat
     Serial.print(receivedData.command);
     Serial.print(" - Valor: ");
     Serial.println(receivedData.value);
-
-    Serial.print("De MAC: ");
-    for (int i = 0; i < 6; i++) {
-        if (i) Serial.print(":");
-        Serial.printf("%02X", recv_info->src_addr[i]);
-    }
-    Serial.println();
 }
 
 void setup() {
@@ -186,18 +186,44 @@ void loop() {
   delay(10);
 }
 
+// Verifica se pode enviar comando (delay de 10 segundos)
+bool canSendCommand() {
+    if (waitingForDelay) {
+        unsigned long currentTime = millis();
+        if (currentTime - lastCommandTime < COMMAND_DELAY) {
+            Serial.print("Aguarde ");
+            Serial.print((COMMAND_DELAY - (currentTime - lastCommandTime)) / 1000);
+            Serial.println(" segundos antes do próximo comando");
+            return false;
+        }
+        waitingForDelay = false;
+    }
+    return true;
+}
+
 // Comunicação com a ESP Secundária
 void sendCommandToSecondary(String cmd, long value, long position) {
+    if (!canSendCommand()) {
+        return;
+    }
+    
     memset(&myData, 0, sizeof(myData));
     strncpy(myData.command, cmd.c_str(), sizeof(myData.command)-1);
     myData.value = value;
     myData.position = position;
+    
     esp_err_t ret = esp_now_send(broadcastAddress, (uint8_t *) &myData, sizeof(myData));
     if(ret != ESP_OK){
         Serial.print("esp_now_send falhou: ");
         Serial.println(ret);
+        waitingForDelay = false;
+    } else {
+        lastCommandTime = millis();
+        waitingForDelay = true;
+        Serial.println("Comando enviado - Aguardando 10 segundos para próximo");
     }
 }
+
 
 // Função para mover eixo X para posição específica
 void moveToPositionX(long position) {
@@ -304,88 +330,103 @@ void handleSerialCommands() {
             char cmd = command.charAt(0);
 
             switch(cmd) {
-                case 'w': case 'W':
-                    movingToTargetX = false;
-                    resettingX = false;
-                    moveFront();
-                    Serial.println("Movendo EIXO X: BACK");
-                    lastCommand = "BACK";
+                case 'w': case 'W': // Eixo Z - Cima
+                    sendCommandToSecondary("MOVE_Z", 1);
+                    Serial.println("Comando enviado: EIXO Z CIMA");
                     break;
 
-                case 's': case 'S':
-                    movingToTargetX = false;
-                    resettingX = false;
-                    moveBack();
-                    Serial.println("Movendo EIXO X: FRENTE");
-                    lastCommand = "FRONT";
+                case 's': case 'S': // Eixo Z - Baixo
+                    sendCommandToSecondary("MOVE_Z", -1);
+                    Serial.println("Comando enviado: EIXO Z BAIXO");
                     break;
 
-                case 'a': case 'A':
-                    sendCommandToSecondary("MOVE", 1);
+                case 'a': case 'A': // Eixo Y - Esquerda
+                    sendCommandToSecondary("MOVE_Y", 1);
                     Serial.println("Comando enviado: EIXO Y ESQUERDA");
                     break;
 
-                case 'd': case 'D':
-                    sendCommandToSecondary("MOVE", -1);
+                case 'd': case 'D': // Eixo Y - Direita
+                    sendCommandToSecondary("MOVE_Y", -1);
                     Serial.println("Comando enviado: EIXO Y DIREITA");
                     break;
 
-                case 'x': case 'X':
+                case 'q': case 'Q': // Garra - Abrir
+                    sendCommandToSecondary("GRIP", 80); // 80 = aberto
+                    Serial.println("Comando enviado: GARRA ABRIR");
+                    break;
+
+                case 'e': case 'E': // Garra - Fechar
+                    sendCommandToSecondary("GRIP", 10); // 10 = fechado
+                    Serial.println("Comando enviado: GARRA FECHAR");
+                    break;
+
+                case 'x': case 'X': // Parar tudo
                     stopAllMotors();
-                    sendCommandToSecondary("STOP");
+                    sendCommandToSecondary("STOP_ALL", 0);
                     movingToTargetX = false;
                     resettingX = false;
                     Serial.println("PARANDO TODOS OS MOTORES");
                     lastCommand = "STOP";
                     break;
 
-                case 'p': case 'P':
+                case 'p': case 'P': // Status
                     printEncoderStatus();
+                    sendCommandToSecondary("STATUS", 0);
                     break;
 
-                case 'z': case 'Z':
+                case 'z': case 'Z': // Reset encoders
                     resetAllEncoders();
-                    sendCommandToSecondary("RESET_ENC");
+                    sendCommandToSecondary("RESET_ENC", 0);
                     break;
 
-                case 'r': case 'R':
+                case 'r': case 'R': // Reset eixos
                     if (command.length() > 1) {
                         char axis = command.charAt(1);
                         if (axis == 'x' || axis == 'X') {
                             resetX();
                         } else if (axis == 'y' || axis == 'Y') {
                             Serial.println("Enviando: RESET EIXO Y");
-                            sendCommandToSecondary("RESET");
+                            sendCommandToSecondary("RESET_Y", 0);
+                        } else if (axis == 'z' || axis == 'Z') {
+                            Serial.println("Enviando: RESET EIXO Z");
+                            sendCommandToSecondary("RESET_Z", 0);
                         }
                     }
                     break;
 
-                case 'g': case 'G':
+                case 'g': case 'G': // Ir para posição
                     if (command.length() > 1) {
                         char axis = command.charAt(1);
                         long position = command.substring(2).toInt();
                         if (axis == 'x' || axis == 'X') {
                             moveToPositionX(position);
                         } else if (axis == 'y' || axis == 'Y') {
-                            sendCommandToSecondary("GOTO", 0, position);
+                            sendCommandToSecondary("GOTO_Y", 0, position);
                             Serial.print("Enviando: EIXO Y para posição ");
+                            Serial.println(position);
+                        } else if (axis == 'z' || axis == 'Z') {
+                            sendCommandToSecondary("GOTO_Z", 0, position);
+                            Serial.print("Enviando: EIXO Z para posição ");
                             Serial.println(position);
                         }
                     }
                     break;
 
-                case 'h': case 'H':
+                case 'h': case 'H': // Ajuda
                     printHelp();
                     break;
 
-                case 'i': case 'I':
+                case 'i': case 'I': // Informações
                     printStatus();
+                    break;
+
+                default:
+                    Serial.println("Comando inválido! Digite 'H' para ajuda.");
                     break;
             }
         }
     }
 }
-
 // Funções de interrupção para encoder
 void IRAM_ATTR handleEncoderA() { updateEncoder(encoderA); }
 
@@ -467,21 +508,36 @@ void moveFront() {
 
 void printHelp() {
     Serial.println();
-    Serial.println("=== COMANDOS SERIAL ===");
-    Serial.println("W - Mover EIXO Y para FRENTE");
-    Serial.println("S - Mover EIXO Y para TRÁS");
-    Serial.println("A - Mover EIXO X para FRENTE");
-    Serial.println("D - Mover EIXO X para BACK");
-    Serial.println("X - PARAR todos os motores");
-    Serial.println("GX<num> - Move EIXO X para posição");
-    Serial.println("GY<num> - Move EIXO Y para posição");
-    Serial.println("RX - Reset EIXO X");
-    Serial.println("RY - Reset EIXO Y");
-    Serial.println("P - Status dos encoders");
-    Serial.println("Z - Resetar encoders");
-    Serial.println("I - Informações do sistema");
-    Serial.println("H - Ajuda");
-    Serial.println("========================");
+    Serial.println("=== COMANDOS SERIAL (ESP PRINCIPAL) ===");
+    Serial.println("CONTROLE EIXO X (Local):");
+    Serial.println("  Frente/Trás: Botões físicos");
+    Serial.println("  GX<num>     - Move EIXO X para posição");
+    Serial.println("  RX          - Reset EIXO X");
+    Serial.println();
+    Serial.println("CONTROLE REMOTO (ESP Secundária):");
+    Serial.println("  EIXO Y:");
+    Serial.println("    A         - ESQUERDA");
+    Serial.println("    D         - DIREITA"); 
+    Serial.println("    GY<num>   - Move para posição Y");
+    Serial.println("    RY        - Reset EIXO Y");
+    Serial.println("  EIXO Z:");
+    Serial.println("    W         - CIMA");
+    Serial.println("    S         - BAIXO");
+    Serial.println("    GZ<num>   - Move para posição Z");
+    Serial.println("    RZ        - Reset EIXO Z");
+    Serial.println("  GARRA:");
+    Serial.println("    Q         - ABRIR");
+    Serial.println("    E         - FECHAR");
+    Serial.println();
+    Serial.println("COMANDOS GERAIS:");
+    Serial.println("  X          - PARAR todos os motores");
+    Serial.println("  P          - Status dos encoders");
+    Serial.println("  Z          - Resetar encoders");
+    Serial.println("  I          - Informações do sistema");
+    Serial.println("  H          - Mostrar esta ajuda");
+    Serial.println();
+    Serial.println("NOTA: Comandos remotos têm delay de 10 segundos");
+    Serial.println("================================");
 }
 
 void printStatus() {
@@ -491,5 +547,13 @@ void printStatus() {
     Serial.print("Movendo para alvo X: "); Serial.println(movingToTargetX ? "SIM" : "NÃO");
     Serial.print("Resetando X: "); Serial.println(resettingX ? "SIM" : "NÃO");
     Serial.print("Último comando: "); Serial.println(lastCommand);
+    Serial.print("Próximo comando em: ");
+    if (waitingForDelay) {
+        unsigned long remaining = COMMAND_DELAY - (millis() - lastCommandTime);
+        Serial.print(remaining / 1000);
+        Serial.println(" segundos");
+    } else {
+        Serial.println("PRONTO");
+    }
     Serial.println("=========================");
 }
