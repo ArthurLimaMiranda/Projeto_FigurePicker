@@ -1,7 +1,15 @@
 Classifier/Data/
-Classifier/models
+# Classifier/models
 
 Coords/Data/
 
 venv/
+
+*.jpg
+*.png
+*.jpeg
+
+yolov11s/3d-geom-shape-detector-1/train/labels
+
+yolov11s/dataset_balanced
 

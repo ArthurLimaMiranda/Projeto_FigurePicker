@@ -1,7 +1,17 @@
-numpy
-scikit-image
-scikit-learn
+# numpy
+# scikit-image
+# scikit-learn
+# matplotlib
+# seaborn
+# joblib
+
+ultralytics>=8.0.0
+roboflow
+opencv-python
+pyyaml
 matplotlib
 seaborn
 joblib
-opencv-python
+torch
+torchvision
+pillow
