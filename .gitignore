@@ -10,7 +10,7 @@ venv/
 *.jpeg
 *.bat
 
-yolov11s/3d-geom-shape-detector-1/
+yolov11s/3d-geom-shape-detector-1
 
 yolov11s/dataset_balanced
 
