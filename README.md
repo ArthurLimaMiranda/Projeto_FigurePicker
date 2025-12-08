@@ -13,6 +13,9 @@ O FigurePicker é um projeto de robótica que combina:
 
 ```
 Projeto_FigurePicker/
+├── Garra/                 # Modelos 3D da garra
+│   ├── tinker.obj        # Modelo 3D principal da garra
+│   └── obj.mtl           # Arquivo de materiais
 ├── Hardware/              # Código para controle físico com ESP32
 ├── Simulation/            # Simulações em CoppeliaSim
 │   ├── Entrega_11-11/    # Versão com câmera acoplada
@@ -26,19 +29,29 @@ Projeto_FigurePicker/
 
 ## Componentes Principais
 
-### 1. Hardware
+### 1. Garra (Modelos 3D)
+Modelos 3D da garra utilizada no sistema:
+- **tinker.obj**: Modelo 3D completo da garra cartesiana
+- **obj.mtl**: Arquivo de materiais e texturas
+- Formato OBJ para importação em simuladores (CoppeliaSim) e CAD
+
+### 2. Hardware
 Sistema de controle com dois ESP32 comunicando via ESP-NOW:
 - ESP Principal: Controla movimento nos eixos X
 - ESP Secundário: Controla movimentos nos eixos Y e Z
 - Encoder para feedback de posição
 - Interface serial para comandos
 
-### 2. Simulation
+![Demonstração do Hardware](Recursos/Hardware.mp4)
+
+### 3. Simulation
 Simulações em CoppeliaSim com evolução do sistema:
 - **V1 (11/11)**: Câmera acoplada à garra, controle por pixel
 - **V2 (25/11)**: Câmera externa em tripé, raycasting 3D completo
 
-### 3. Vision Picker
+![Demonstração da Simulação](Recursos/simulacao.png)
+
+### 4. Vision Picker
 Sistema completo de visão computacional:
 - **YOLOv11s**: Detecção em tempo real de cubos e esferas
 - **Classifier**: Classificador tradicional baseado em características
