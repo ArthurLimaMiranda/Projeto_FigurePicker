@@ -41,7 +41,7 @@ Hardware/
 └─────────────────────────┘
 ```
 
-## 🛠️ Hardware Components
+## Hardware Components
 
 ### ESP Principal
 - **Função**: Controla movimento no eixo X (Frente/Trás)
@@ -72,7 +72,7 @@ Botões:
 - **Encoders**: 2 encoders (um para cada eixo)
 - **Comunicação**: ESP-NOW (recebe comandos do ESP Principal)
 
-## 📡 Protocolo ESP-NOW
+## Protocolo ESP-NOW
 
 ### Estrutura de Mensagem
 ```cpp
