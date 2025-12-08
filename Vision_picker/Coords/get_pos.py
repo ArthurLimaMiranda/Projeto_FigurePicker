@@ -1,103 +1,156 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-from tkinter import Tk, filedialog  
+from tkinter import Tk, filedialog
+import joblib
+from skimage.transform import resize
 
 
-def is_white(color):
-    # Verifica se a cor está próxima do branco
-    return np.all(color > 200)
+#=========VARS==========
+#TODO:POR NUM .ENV DPS
+save_path = '../Classifier/models/melhor_modelo.pkl'
+
+model = joblib.load(save_path)
+
+label_map = {0:'circle',1:'square'}
+
+#=========Defs and Functions=========
+
+def distance(p1,p2):
+    '''Calcular a distância entre dois pontos'''
+    return np.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
+
+def classify_shape(roi_gray):
+    '''Classificar a Figura'''
+
+    #Converter para Grayscale
+    roi_resized = resize(roi_gray, (64, 64),anti_aliasing=True)
+    #Normalizar IMG
+    roi_flat = roi_resized.flatten().reshape(1,-1)
+
+    # Faz a predição da IMG
+    pred = model.predict(roi_flat)[0]
+    return label_map[pred]
 
 
-def distance(p1, p2):
-    # Calcula a distância euclidiana entre dois pontos
-    return np.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
-
-
-# Abre a caixa de diálogo de arquivo para escolher o arquivo de imagem
+#=========Selecting Image=========
+# Abrindo o arquivo
 root = Tk()
 root.withdraw()
-image_path = filedialog.askopenfilename(title="Select Image File", filetypes=[("Image files", "*.jpg;*.jpeg;*.png")])
+
+image_path = filedialog.askopenfilename(
+    title='Selecione a Figura',
+    filetypes=[("Image files", "*.jpg;*.png;*.jpeg")]
+)
+
+#Limpando a memória
 root.destroy()
 
 if not image_path:
-    print("Nenhum arquivo selecionado. Encerrando o programa.")
+    print("Nenhum arquivo selecionado")
     exit()
 
-# Le a imagem
-image = cv2.imread(image_path)
+# Carregando a Figura
+img  = cv2.imread(image_path)
+# Convertendo para Grayscale
+gray = cv2.cvtColor(img , cv2.COLOR_BGR2GRAY)
+# Aplicando Blur
+blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-# Converte para HSV
-hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+#Threshold
+_,thresh = cv2.threshold(
+        blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        )
 
-# Define intervalos de cores em HSV
-color_ranges = {
-    "purple": ((125, 50, 50), (160, 255, 255))
-}
+#Acha Bordas/Contornos
+contours, _ = cv2.findContours(
+    thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+)
 
-# Distância mínima entre pontos
-min_distance = 20
+#=========Prompt User=========
+valid_shapes = list(label_map.values())
 
-# Inicializa uma lista para armazenar posições centrais
-colored_points = []
+target_shape = None
 
-# Itera através de intervalos de cores
-for color, (lower_bound, upper_bound) in color_ranges.items():
-    # Limita a imagem para obter uma máscara binária
-    mask = cv2.inRange(hsv_image, np.array(lower_bound, dtype=np.uint8), np.array(upper_bound, dtype=np.uint8))
+while target_shape is None:
+    resposta = input("Digite a figura desejada (circle ou square): ").lower()
+    if resposta in valid_shapes:
+        target_shape = resposta
+    else:
+        print("Opção inválida, tente novamente.")
 
-    # Acha os contornos
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Itera através de contornos
-    for contour in contours:
-        # Calcula a caixa delimitadora para o contorno
-        x, y, w, h = cv2.boundingRect(contour)
+min_dist = 20
+detected_points = []
 
-        # Pula a cor branca
-        if is_white(image[y:y + h, x:x + w]):
+
+#=========Main Logica=========
+
+for contour in contours:
+    x,y,w,h = cv2.boundingRect(contour)
+
+    #ignora contornos muito pequenos
+    if w < min_dist or h < min_dist:
+        continue
+
+    roi_gray = gray[y:y+h, x:x+w]
+
+
+    #Classificar a Figura
+    shape = classify_shape(roi_gray)
+
+    if shape != target_shape:
+        continue
+    
+    #Centro da Figura
+    cx = x + w/2
+    cy = y + h/2
+
+    valid = True
+    for p in detected_points:
+        #Checa se a dist é válida
+        if distance(p["position"], (cx,cy)) < min_dist:
+            valid = False
+            break
+
+        if not valid:
             continue
 
-        # Obtém a posição central e a cor RGB
-        center_x = x + w // 2
-        center_y = y + h // 2
-        rgb_color = tuple(image[center_y, center_x])
-        # print(rgb_color)
+        #Se for válido adiciona a posição
+        detected_points.append({
+            "shape": shape,
+            "position": (cx,cy)
+        })
 
-        # Verifica a distância mínima entre os pontos
-        valid_point = True
-        for point in colored_points:
-            if distance(point['position'], (center_x, center_y)) < min_distance:
-                valid_point = False
-                break
+        cv2.retangle(
+            img,(x,y),(x+w,y+h),
+            color=(0,0,255),
+            thickness=2
+        )
+        cv2.putText(
+            img,shape,(x,y - 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,(0,0,255),2
+        )
+     
+#==========Resultados=========
 
-        # Se o ponto for válido, anexa à lista
-        if valid_point:
-            colored_points.append({
-                'color_rgb': rgb_color,
-                'position': (center_x, center_y),
-            })
+print(f'\nFiguras encontradas: {detected_points}\n')
 
-            # Desenha uma caixa delimitadora ao redor do ponto
-            cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-print(colored_points)
-# Mostra o resultado
-cv2.imshow('Pontos coloridos detectados com caixas delimitadoras', image)
+#Mostrando a Figura
+cv2.imshow("Detected Figures", img)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
 
-# Plota as coordenadas
+
+#=========Plotando=========
 fig, ax = plt.subplots()
-for point in colored_points:
-    # Inverte as componentes de cor de RGB para BGR
-    bgr_color = (point['color_rgb'][2], point['color_rgb'][1], point['color_rgb'][0])
 
-    ax.scatter(point['position'][0], -point['position'][1], color=np.array(bgr_color) / 255)
-    ax.text(point['position'][0], -point['position'][1], f"{point['position']}", fontsize=8, ha='right',
-            color=np.array(bgr_color) / 255)
+for p in detected_points:
+    ax.scatter(p["position"][0], -p["position"][1])
+    ax.text(p["position"][0], -p["position"][1], f"{p['position']}", fontsize=8)
 
-plt.title('Pontos coloridos detectados com coordenadas')
-plt.xlabel('X')
-plt.ylabel('Y')
+plt.title(f"Posições de '{target_shape}'")
+plt.xlabel("X")
+plt.ylabel("Y")
 plt.show()
