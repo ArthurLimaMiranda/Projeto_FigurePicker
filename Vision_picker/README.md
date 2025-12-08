@@ -340,13 +340,6 @@ graph LR
     H --> I[Controle Robô]
 ```
 
-## Referências
-
-- [Ultralytics YOLOv11](https://github.com/ultralytics/ultralytics)
-- [Roboflow](https://roboflow.com/)
-- [OpenCV Documentation](https://docs.opencv.org/)
-- [Albumentations](https://albumentations.ai/)
-
 ## Exemplos de Saída
 
 ### Detecção YOLO
