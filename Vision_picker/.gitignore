@@ -1,23 +1,5 @@
 Classifier/Data/
-Classifier/models
 
-Coords/Data/
 
 venv/
 
-*.jpg
-*.png
-*.jpeg
-*.bat
-
-yolov11s/3d-geom-shape-detector-1
-
-yolov11s/dataset_balanced
-
-yolo_dataset/labelme_test
-yolo_dataset/labelme_train
-yolo_dataset/labels
-yolo_dataset/labels.txt
-yolo_dataset/images
-yolo_dataset/dataset_aumentado
-yolo_dataset/converted_images
