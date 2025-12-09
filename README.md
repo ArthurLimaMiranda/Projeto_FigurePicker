@@ -16,12 +16,6 @@ graph LR
     B --> C[Coordenadas<br/>3D]
     C --> D[ESP32<br/>Controle]
     D --> E[Garra<br/>Movimento]
-    
-    style A fill:#e1f5ff
-    style B fill:#fff4e1
-    style C fill:#ffe1f5
-    style D fill:#e1ffe1
-    style E fill:#f5e1ff
 ```
 
 ## Estrutura do Projeto
