@@ -9,6 +9,21 @@ O FigurePicker é um projeto de robótica que combina:
 - **Simulação**: Ambiente virtual completo em CoppeliaSim com garra cartesiana (PPP)
 - **Hardware**: Sistema de controle físico com ESP32 usando comunicação ESP-NOW
 
+### Fluxo do Sistema
+```mermaid
+graph LR
+    A[Câmera] --> B[YOLOv11<br/>Detecção]
+    B --> C[Coordenadas<br/>3D]
+    C --> D[ESP32<br/>Controle]
+    D --> E[Garra<br/>Movimento]
+    
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#ffe1f5
+    style D fill:#e1ffe1
+    style E fill:#f5e1ff
+```
+
 ## Estrutura do Projeto
 
 ```
@@ -61,6 +76,8 @@ Sistema completo de visão computacional:
 - **YOLOv11s**: Detecção em tempo real de cubos e esferas
 - **Classifier**: Classificador tradicional baseado em características
 - **Dataset Tools**: Scripts para preparação e augmentation de dados
+
+![Detecção de Cubos e Esferas](Recursos/deteccao.png)
 
 ## Instalação
 
@@ -121,10 +138,12 @@ O projeto utiliza dataset customizado com:
 ## Documentação Detalhada
 
 Cada pasta contém seu próprio README com detalhes específicos:
-- [Hardware/README.md](Hardware/README.md) - Detalhes do sistema físico
-- [Simulation/Entrega_11-11/Readme.md](Simulation/Entrega_11-11/Readme.md) - Simulação V1
-- [Simulation/Entrega_25-11/README.md](Simulation/Entrega_25-11/README.md) - Simulação V2
-- [Vision_picker/](Vision_picker/) - Sistema de visão completo
+- [Hardware/README.md](Hardware/README.md) - Sistema físico, pinout, protocolo ESP-NOW
+- [Simulation/Entrega_11-11/Readme.md](Simulation/Entrega_11-11/Readme.md) - Simulação V1 (câmera acoplada)
+- [Simulation/Entrega_25-11/README.md](Simulation/Entrega_25-11/README.md) - Simulação V2 (raycasting 3D)
+- [Vision_picker/README.md](Vision_picker/README.md) - Sistema de visão completo
+- [Vision_picker/yolov11s/README.md](Vision_picker/yolov11s/README.md) - Treinamento e inferência YOLO
+- [Vision_picker/Classifier/README.md](Vision_picker/Classifier/README.md) - Classificador tradicional ML
 
 ## Contribuidores
 
