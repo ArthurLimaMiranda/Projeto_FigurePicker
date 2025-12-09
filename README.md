@@ -56,7 +56,9 @@ Sistema de controle com dois ESP32 comunicando via ESP-NOW:
 
 ![Demonstração do Hardware](Recursos/hardware.png)
 
-[Vídeo de demonstração do Hardware](Recursos/Hardware.mp4)
+Vídeo de demonstração do Hardware:
+
+https://github.com/user-attachments/assets/e5667fb1-db5c-466d-99d5-b31783a8a168
 
 ### 3. Simulation
 Simulações em CoppeliaSim com evolução do sistema:
