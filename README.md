@@ -35,6 +35,9 @@ Modelos 3D da garra utilizada no sistema:
 - **obj.mtl**: Arquivo de materiais e texturas
 - Formato OBJ para importação em simuladores (CoppeliaSim) e CAD
 
+![Garra - Modelo 3D](Recursos/Garra-3D.png)
+![Garra - Versão Real](Recursos/Garra-real.png)
+
 ### 2. Hardware
 Sistema de controle com dois ESP32 comunicando via ESP-NOW:
 - ESP Principal: Controla movimento nos eixos X
@@ -42,7 +45,9 @@ Sistema de controle com dois ESP32 comunicando via ESP-NOW:
 - Encoder para feedback de posição
 - Interface serial para comandos
 
-![Demonstração do Hardware](Recursos/Hardware.mp4)
+![Demonstração do Hardware](Recursos/hardware.png)
+
+[Vídeo de demonstração do Hardware](Recursos/Hardware.mp4)
 
 ### 3. Simulation
 Simulações em CoppeliaSim com evolução do sistema:
