@@ -13,3 +13,7 @@ matplotlib
 torch
 torchvision
 pillow
+
+numpy
+pyrealsense2
+pyserial
