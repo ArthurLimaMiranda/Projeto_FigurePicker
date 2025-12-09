@@ -63,8 +63,6 @@ Simulações em CoppeliaSim com evolução do sistema:
 - **V1 (11/11)**: Câmera acoplada à garra, controle por pixel
 - **V2 (25/11)**: Câmera externa em tripé, raycasting 3D completo
 
-![Demonstração da Simulação](Recursos/simulacao.png)
-
 https://github.com/user-attachments/assets/42683209-a07c-4944-ae0e-6913812d1ff3
 
 ### 4. Vision Picker
