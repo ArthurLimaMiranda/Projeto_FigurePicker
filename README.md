@@ -65,6 +65,8 @@ Simulações em CoppeliaSim com evolução do sistema:
 
 ![Demonstração da Simulação](Recursos/simulacao.png)
 
+https://github.com/user-attachments/assets/42683209-a07c-4944-ae0e-6913812d1ff3
+
 ### 4. Vision Picker
 Sistema completo de visão computacional:
 - **YOLOv11s**: Detecção em tempo real de cubos e esferas
