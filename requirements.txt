@@ -10,9 +10,11 @@ roboflow
 opencv-python
 pyyaml
 matplotlib
+seaborn
+joblib
 torch
 torchvision
-pillow
+pillow-avif-plugin==1.5.0
 
 numpy
 pyrealsense2

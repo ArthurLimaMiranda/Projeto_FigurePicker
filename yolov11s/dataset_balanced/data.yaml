@@ -1,8 +1,0 @@
-names:
-- cube
-- sphere
-nc: 2
-path: "/home/bvc/Secret\xE1ria/Projeto_FigurePicker/yolov11s/dataset_balanced"
-test: test/images
-train: train/images
-val: val/images
