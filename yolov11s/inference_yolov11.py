@@ -1,279 +1,398 @@
-import cv2
-import numpy as np
 from ultralytics import YOLO
+import numpy as np
 import pyrealsense2 as rs
-import time
-from pathlib import Path
+import cv2
+import random
+import torch
+from torch.nn import Module, Conv2d, ReLU
+from torch.nn import functional as F
+from torch.nn import ModuleList, MaxPool2d, ConvTranspose2d
+from torchvision.transforms import CenterCrop
+import threading
+import sys
+import serial
+import json
 
-MODEL_PATH = "runs/detect/cubes_spheres_yolo11s/weights/best.pt"
-CONFIDENCE_THRESHOLD = 0.5
-IMG_SIZE = 640
-DEVICE = 'cpu'
+torch.set_num_threads(8)
 
-print("="*70)
-print(" DETECTOR YOLO + REALSENSE D455 (LINUX)")
-print("="*70)
+class Block(Module):
+    def __init__(self, inChannels, outChannels):
+        super().__init__()
+        self.conv1 = Conv2d(inChannels, outChannels, 3)
+        self.relu = ReLU()
+        self.conv2 = Conv2d(outChannels, outChannels, 3)
 
-
-print(f"\n Carregando modelo...")
-if not Path(MODEL_PATH).exists():
-    print(f"❌ Modelo não encontrado: {MODEL_PATH}")
-    exit()
-
-model = YOLO(MODEL_PATH)
-model.to(DEVICE)
-
-print(f"\n Classes no modelo:")
-for idx, name in model.names.items():
-    print(f"   ID {idx}: '{name}'")
-
-COLORS = {}
-CLASS_NAMES = {}
-
-for idx, name in model.names.items():
-    name_lower = name.lower()
+    def forward(self, x):
+        return self.conv2(self.relu(self.conv1(x)))
     
-    if 'cube' in name_lower or 'cubo' in name_lower:
-        COLORS[idx] = (255, 0, 0)  # BGR - Azul
-        CLASS_NAMES[idx] = 'CUBO'
-        print(f"    Mapeado: ID {idx} → CUBO (azul)")
-    elif 'sphere' in name_lower or 'esfera' in name_lower or 'ball' in name_lower:
-        COLORS[idx] = (0, 255, 0)  # BGR - Verde
-        CLASS_NAMES[idx] = 'ESFERA'
-        print(f"    Mapeado: ID {idx} → ESFERA (verde)")
-    else:
-        COLORS[idx] = (255, 255, 255)
-        CLASS_NAMES[idx] = name.upper()
-        print(f"     ID {idx} → {name}")
+class Encoder(Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.encBlocks = ModuleList([Block(channels[i], channels[i + 1]) for i in range(len(channels) - 1)])
+        self.pool = MaxPool2d(2)
 
-print(f"\n✅ Modelo carregado!")
+    def forward(self, x):
+        blockOutputs = []
+        for block in self.encBlocks:
+            x = block(x)
+            blockOutputs.append(x)
+            x = self.pool(x)
+        return blockOutputs
 
-print(f"\n Inicializando RealSense D455...")
+class Decoder(Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.channels = channels
+        self.upconvs = ModuleList(
+            [ConvTranspose2d(channels[i], channels[i + 1], 2, 2) for i in range(len(channels) - 1)])
+        self.dec_blocks = ModuleList([Block(channels[i], channels[i + 1]) for i in range(len(channels) - 1)])
 
-pipeline = rs.pipeline()
-config = rs.config()
+    def forward(self, x, encFeatures):
+        for i in range(len(self.channels) - 1):
+            x = self.upconvs[i](x)
+            encFeat = self.crop(encFeatures[i], x)
+            x = torch.cat([x, encFeat], dim=1)
+            x = self.dec_blocks[i](x)
+        return x
 
-config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-
-try:
-    profile = pipeline.start(config)
-    device = profile.get_device()
-    print(f" RealSense: {device.get_info(rs.camera_info.name)}")
+    def crop(self, encFeatures, x):
+        (_, _, H, W) = x.shape
+        encFeatures = CenterCrop([H, W])(encFeatures)
+        return encFeatures
     
-    print(" Aguardando estabilização...")
-    for _ in range(30):
-        pipeline.wait_for_frames()
-    print("✅ Pronta!")
-    
-except Exception as e:
-    print(f" Erro: {e}")
-    exit()
+class UNet(Module):
+    def __init__(self, encChannels, decChannels, outSize, nbClasses=1, retainDim=True):
+        super().__init__()
+        self.encoder = Encoder(encChannels)
+        self.decoder = Decoder(decChannels)
+        self.head = Conv2d(decChannels[-1], nbClasses, 1)
+        self.retainDim = retainDim
+        self.outSize = outSize
 
-align = rs.align(rs.stream.color)
+    def forward(self, x):
+        encFeatures = self.encoder(x)
+        decFeatures = self.decoder(encFeatures[::-1][0], encFeatures[::-1][1:])
+        map_ = self.head(decFeatures)
+        if self.retainDim:
+            map_ = F.interpolate(map_, self.outSize)
+        return map_
 
-print("\n" + "="*70)
-print(" CONTROLES")
-print("="*70)
-print("  'q' - Sair")
-print("  's' - Salvar screenshot")
-print("  '+' - Aumentar confiança")
-print("  '-' - Diminuir confiança")
-print("  'd' - Toggle depth view")
-print("="*70 + "\n")
+class Plane:
+    def __init__(self):
+        self.inliers = []
+        self.equation = []
 
+    def fit(self, pts, thresh=0.05, minPoints=100, maxIteration=1000):
+        n_points = pts.shape[0]
+        best_eq = []
+        best_inliers = []
 
-prev_time = time.time()
-frame_count = 0
-fps = 0
-show_depth = False
+        for it in range(maxIteration):
+            id_samples = random.sample(range(0, n_points), 3)
+            pt_samples = pts[id_samples]
 
-
-def draw_detections(frame, depth_frame, results, conf_threshold):
-    """Desenha detecções com informação de debug"""
-    detections = []
-    
-    for result in results:
-        for box in result.boxes:
-            conf = float(box.conf[0])
-            cls = int(box.cls[0])
+            vecA = pt_samples[1, :] - pt_samples[0, :]
+            vecB = pt_samples[2, :] - pt_samples[0, :]
+            vecC = np.cross(vecA, vecB)
             
-            if conf < conf_threshold:
+            norm = np.linalg.norm(vecC)
+            if norm < 1e-6:
                 continue
-            
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-            
-            distance = depth_frame.get_distance(cx, cy)
-            
-            model_class_name = model.names[cls]
-            display_name = CLASS_NAMES.get(cls, model_class_name)
-            
-            detections.append({
-                'class_id': cls,
-                'confidence': conf,
-                'bbox': (x1, y1, x2, y2),
-                'distance': distance,
-                'model_name': model_class_name,
-                'display_name': display_name
-            })
-            
-            color = COLORS.get(cls, (255, 255, 255))
-            
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
-            
-            text = f"{display_name} {conf:.1%}"
-            if distance > 0:
-                text += f" | {distance:.2f}m"
-            
-            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-            cv2.rectangle(frame, (x1, y1-th-10), (x1+tw+10, y1), color, -1)
-            cv2.putText(frame, text, (x1+5, y1-5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            debug_text = f"[Modelo: '{model_class_name}' ID:{cls}]"
-            cv2.putText(frame, debug_text, (x1, y2+25), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-            
-            if 'sphere' in model_class_name.lower():
-                cv2.circle(frame, (cx, cy), 12, color, -1)
-                cv2.circle(frame, (cx, cy), 12, (255, 255, 255), 2)
-            else:
-                s = 12
-                cv2.rectangle(frame, (cx-s, cy-s), (cx+s, cy+s), color, -1)
-                cv2.rectangle(frame, (cx-s, cy-s), (cx+s, cy+s), (255, 255, 255), 2)
-            
-            # Cruz de medição
-            cv2.drawMarker(frame, (cx, cy), (0, 255, 255), 
-                          cv2.MARKER_CROSS, 25, 2)
-    
-    return detections
+                
+            vecC = vecC / norm
+            k = -np.sum(np.multiply(vecC, pt_samples[1, :]))
+            if k < 0:
+                k *= -1
 
-def draw_info_panel(frame, detections, fps, conf):
-    """Painel de informações"""
-    h, w = frame.shape[:2]
-    overlay = frame.copy()
-    
-    cv2.rectangle(overlay, (0, 0), (w, 120), (40, 40, 40), -1)
-    frame = cv2.addWeighted(overlay, 0.75, frame, 0.25, 0)
-    
-    cubos = sum(1 for d in detections if 'CUBO' in d['display_name'])
-    esferas = sum(1 for d in detections if 'ESFERA' in d['display_name'])
-    
-    cv2.putText(frame, f"FPS: {fps:.1f}", (15, 35),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-    cv2.putText(frame, f"Confianca: {conf:.2f}", (15, 70),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-    cv2.putText(frame, f"Total: {len(detections)}", (15, 100),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-    
-    cv2.putText(frame, f"Cubos: {cubos}", (280, 50),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
-    cv2.putText(frame, f"Esferas: {esferas}", (280, 90),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-    
-    lx = w - 200
-    cv2.rectangle(frame, (lx, 20), (lx+30, 50), (255, 0, 0), -1)
-    cv2.putText(frame, "= Cubo", (lx+40, 42),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-    
-    cv2.rectangle(frame, (lx, 60), (lx+30, 90), (0, 255, 0), -1)
-    cv2.putText(frame, "= Esfera", (lx+40, 82),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-    
-    return frame
+            plane_eq = [vecC[0], vecC[1], vecC[2], k]
 
+            dist_pt = (
+                plane_eq[0] * pts[:, 0] + plane_eq[1] * pts[:, 1] + plane_eq[2] * pts[:, 2] + plane_eq[3]
+            ) / np.sqrt(plane_eq[0] ** 2 + plane_eq[1] ** 2 + plane_eq[2] ** 2)
 
-print(" Detector ativo!\n")
-print(" Observe o texto amarelo '[Modelo: ...]' embaixo de cada detecção")
-print("   Isso mostra o que o modelo REALMENTE detectou\n")
+            pt_id_inliers = np.where(np.abs(dist_pt) <= thresh)[0]
+            if len(pt_id_inliers) > len(best_inliers):
+                best_eq = plane_eq
+                best_inliers = pt_id_inliers
+            self.inliers = best_inliers
+            self.equation = best_eq
+
+        return self.equation, self.inliers
+
+def calculate_center_xyz(frameDepth, mask, vertices):
+    mask_copy = mask.copy()
+    mask_copy[frameDepth < 350] = False
+    mask_copy[frameDepth > 4500] = False
+    mask_copy[frameDepth == 0] = False
+
+    vertices_list = vertices[mask_copy == 255]
+
+    if vertices_list.shape[0] < 50:
+        return np.array([-1, -1, -1])
+
+    mean_point = np.mean(vertices_list, axis=0)
+    std_point = np.std(vertices_list, axis=0)
+    
+    distances = np.abs(vertices_list - mean_point)
+    mask_outliers = np.all(distances < 2 * std_point, axis=1)
+    vertices_filtered = vertices_list[mask_outliers]
+    
+    if vertices_filtered.shape[0] < 50:
+        vertices_filtered = vertices_list
+
+    plane1 = Plane()
+    best_eq, best_inliers = plane1.fit(vertices_filtered, thresh=0.02, maxIteration=2000)
+
+    if len(best_inliers) < 20:
+        return np.array([-1, -1, -1])
+
+    median_x = np.median(vertices_filtered[best_inliers, 0])
+    median_y = np.median(vertices_filtered[best_inliers, 1])
+    median_z = np.median(vertices_filtered[best_inliers, 2])
+
+    center = np.array([median_x, median_y, median_z])
+    
+    for iteration in range(5):
+        radius = 0.15 / (iteration + 1)
+        
+        dist = np.linalg.norm(vertices_filtered[best_inliers] - center, axis=1)
+        new_points_mask = dist < radius
+        new_points = best_inliers[new_points_mask]
+
+        if len(new_points) > 10:
+            weights = 1.0 / (dist[new_points_mask] + 0.001)
+            center[0] = np.average(vertices_filtered[new_points, 0], weights=weights)
+            center[1] = np.average(vertices_filtered[new_points, 1], weights=weights)
+            center[2] = np.average(vertices_filtered[new_points, 2], weights=weights)
+        else:
+            break
+
+    distances_to_center = np.linalg.norm(vertices_filtered[best_inliers] - center, axis=1)
+    if np.min(distances_to_center) > 0.2:
+        center[0] = np.median(vertices_filtered[best_inliers, 0])
+        center[1] = np.median(vertices_filtered[best_inliers, 1])
+        center[2] = np.median(vertices_filtered[best_inliers, 2])
+    
+    return center
+    
+def segment_unet(frame, depth, points):
+    UNET_IMAGE_WIDTH = 64
+    UNET_IMAGE_HEIGHT = 64
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    unet_threshold = 0.3
+    
+    use_rgb_depth = 3
+
+    if use_rgb_depth == 3:
+        in_channels = 4
+
+    encChannels = (in_channels, 1)
+    decChannels = (1,)
+
+    unet = UNet(encChannels=encChannels, decChannels=decChannels, outSize=(UNET_IMAGE_HEIGHT, UNET_IMAGE_WIDTH)).to(DEVICE)
+
+    points[points < 0] = 0
+
+    rgb = frame.astype(np.float32)
+    rgb = rgb / 255.0
+    depth_norm = depth.astype(np.float32)
+
+    top = int(points[3])
+    if top >= frame.shape[0]:
+        top = frame.shape[0] - 1
+
+    bottom = int(points[1])
+    left = int(points[0])
+    right = int(points[2])
+    if right >= frame.shape[1]:
+        right = frame.shape[1] - 1
+
+    cropped_rgb = rgb[bottom:top, left:right].copy()
+    cropped_rgb = cv2.resize(cropped_rgb, (UNET_IMAGE_WIDTH, UNET_IMAGE_HEIGHT))
+
+    cropped_depth = depth_norm[bottom:top, left:right].copy()
+    cropped_depth = cv2.resize(cropped_depth, (UNET_IMAGE_WIDTH, UNET_IMAGE_HEIGHT))
+    cropped_depth = (cropped_depth - np.amin(cropped_depth)) / (
+                np.amax(cropped_depth) - np.amin(cropped_depth) + 0.000001)
+
+    cropped_image = np.dstack((cropped_rgb, cropped_depth))
+
+    cv2.imshow("cropped_image", cropped_image)
+
+    image = np.transpose(cropped_image, (2, 0, 1))
+    image = np.expand_dims(image, 0)
+    image = torch.from_numpy(image).to(DEVICE)
+
+    predMask = unet(image).squeeze()
+    predMask = torch.sigmoid(predMask)
+    predMask = predMask.detach().cpu().numpy()
+
+    predMask = (predMask > unet_threshold) * 255
+    predMask = predMask.astype(np.uint8)
+
+    kernel = np.ones((3, 3), np.uint8)
+    predMask = cv2.morphologyEx(predMask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    predMask = cv2.morphologyEx(predMask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    predMask = cv2.resize(predMask, (right - left, top - bottom))
+
+    cv2.imshow("predMask", predMask)
+
+    blank = np.zeros(shape=(frame.shape[0], frame.shape[1]), dtype=np.float32)
+
+    blank[bottom:top, left:right] = predMask
+
+    return blank
+
+def input_thread(detection_data, running, ser):
+    while running[0]:
+        try:
+            sys.stdout.write("\nDigite 0 para ver esferas ou 1 para ver cubos (ou 'q' para sair): ")
+            sys.stdout.flush()
+            
+            user_input = input()
+            
+            if user_input.lower() == 'q':
+                running[0] = False
+                break
+            
+            if user_input == '0':
+                if detection_data['sphere']:
+                    result = {"esfera": detection_data['sphere']}
+                    print(result)
+                    
+                    # Enviar para ESP32
+                    if ser:
+                        json_str = json.dumps(result)
+                        ser.write((json_str + '\n').encode())
+                        print(f"Enviado para ESP32: {json_str}")
+                else:
+                    print("Nenhuma esfera detectada.")
+                
+            elif user_input == '1':
+                if detection_data['cube']:
+                    result = {"cubo": detection_data['cube']}
+                    print(result)
+                    
+                    # Enviar para ESP32
+                    if ser:
+                        json_str = json.dumps(result)
+                        ser.write((json_str + '\n').encode())
+                        print(f"Enviado para ESP32: {json_str}")
+                else:
+                    print("Nenhum cubo detectado.")
+                
+        except Exception as e:
+            break
+
+# Inicializar comunicação serial
+try:
+    ser = serial.Serial('COM5', 115200, timeout=1)
+    print("Conexão serial estabelecida em COM5")
+except Exception as e:
+    print(f"Erro ao conectar à porta serial: {e}")
+    ser = None
+
+detection_data = {
+    'sphere': None,
+    'cube': None
+}
+
+running = [True]
+
+input_thread_obj = threading.Thread(target=input_thread, args=(detection_data, running, ser), daemon=True)
+input_thread_obj.start()
+
+pipe = rs.pipeline()
+cfg = rs.config()
+cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+pipe_profile = pipe.start(cfg)
+align_to = rs.stream.color
+align = rs.align(align_to)
+colorizer = rs.colorizer()
+pc = rs.pointcloud()
+
+depth_sensor = pipe_profile.get_device().first_depth_sensor()
+preset_range = depth_sensor.get_option_range(rs.option.visual_preset)
+
+weights_path = 'best_new.pt' 
+model = YOLO(weights_path)
+model.verbose = False
+
+classes = ['sphere', 'cube']
 
 try:
-    while True:
-        frames = pipeline.wait_for_frames()
-        aligned_frames = align.process(frames)
+    while running[0]:
+        last_sphere = None
+        last_cube = None
         
-        color_frame = aligned_frames.get_color_frame()
-        depth_frame = aligned_frames.get_depth_frame()
-        
-        if not color_frame or not depth_frame:
-            continue
-        
-        color_image = np.asanyarray(color_frame.get_data())
+        frames = pipe.wait_for_frames()
+        frames = align.process(frames)
+        depth_frame = frames.get_depth_frame()
+        color_frame = frames.get_color_frame()
+
+        points = pc.calculate(depth_frame)
+        depth_intrinsics = rs.video_stream_profile(depth_frame.profile).get_intrinsics()
+        w, h = depth_intrinsics.width, depth_intrinsics.height
+        vertices = np.asanyarray(points.get_vertices()).view(np.float32).reshape(h, w, 3)
+
         depth_image = np.asanyarray(depth_frame.get_data())
+        color_image = np.asanyarray(color_frame.get_data())
+
+        colorized_depth = colorizer.colorize(depth_frame)
+        depth_cm = np.asanyarray(colorized_depth.get_data())
+
+        results = model.track(color_image, persist=True, verbose=False)
+
+        annotated_frame = results[0].plot()
+        cv2.imshow('YOLOv11 RealSense', annotated_frame)
+
+        for i, result in enumerate(results):
+            boxes = result.boxes
+            
+            for box in boxes:
+                xyxy = box.xyxy.tolist()[0]
+                x1, y1, x2, y2 = xyxy
+
+                class_id = int(box.cls)
+                confidence = float(box.conf)
+                class_name = model.names[class_id]
+
+                if class_name == 'sphere':
+                    mask = segment_unet(color_image, depth_image, np.array(xyxy))
+                    cv2.imshow("mask", mask)
+                    
+                    xyz_center = calculate_center_xyz(depth_image, mask, vertices)
+                    
+                    if xyz_center[0] != -1:
+                        last_sphere = [round(float(xyz_center[0]), 4), 
+                                      round(float(xyz_center[1]), 4), 
+                                      round(float(xyz_center[2]), 4)]
+                
+                if class_name == 'cube':
+                    mask = segment_unet(color_image, depth_image, np.array(xyxy))
+                    cv2.imshow("mask", mask)
+                    
+                    xyz_center = calculate_center_xyz(depth_image, mask, vertices)
+                    
+                    if xyz_center[0] != -1:
+                        last_cube = [round(float(xyz_center[0]), 4), 
+                                    round(float(xyz_center[1]), 4), 
+                                    round(float(xyz_center[2]), 4)]
         
-        results = model.predict(
-            color_image,
-            conf=CONFIDENCE_THRESHOLD,
-            imgsz=IMG_SIZE,
-            verbose=False,
-            device=DEVICE
-        )
+        if last_sphere is not None:
+            detection_data['sphere'] = last_sphere
         
-        detections = draw_detections(color_image, depth_frame, results, 
-                                    CONFIDENCE_THRESHOLD)
-        
-        if detections and frame_count % 30 == 0:
-            print(f"\n Frame {frame_count} - {len(detections)} detecção(ões):")
-            for i, d in enumerate(detections, 1):
-                print(f"   [{i}] {d['display_name']:8} | "
-                      f"Modelo diz: '{d['model_name']:8}' (ID:{d['class_id']}) | "
-                      f"Conf: {d['confidence']:.1%} | "
-                      f"Dist: {d['distance']:.2f}m")
-        
-        frame_count += 1
-        if frame_count % 10 == 0:
-            current = time.time()
-            fps = 10 / (current - prev_time)
-            prev_time = current
-        
-        color_image = draw_info_panel(color_image, detections, fps, 
-                                      CONFIDENCE_THRESHOLD)
-        
-        if show_depth:
-            depth_colormap = cv2.applyColorMap(
-                cv2.convertScaleAbs(depth_image, alpha=0.03),
-                cv2.COLORMAP_JET
-            )
-            display = np.hstack((color_image, depth_colormap))
-            window_name = 'YOLO + RealSense (RGB + Depth) - DEBUG MODE'
-        else:
-            display = color_image
-            window_name = 'YOLO + RealSense - DEBUG MODE'
-        
-        cv2.imshow(window_name, display)
-        
-        key = cv2.waitKey(1) & 0xFF
-        
-        if key == ord('q'):
-            print("\n Encerrando...")
+        if last_cube is not None:
+            detection_data['cube'] = last_cube
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            running[0] = False
             break
-        elif key == ord('s'):
-            fn = f"debug_detection_{int(time.time())}.jpg"
-            cv2.imwrite(fn, display)
-            print(f" Screenshot salvo: {fn}")
-        elif key == ord('+'):
-            CONFIDENCE_THRESHOLD = min(0.99, CONFIDENCE_THRESHOLD + 0.05)
-            print(f" Confiança: {CONFIDENCE_THRESHOLD:.2f}")
-        elif key == ord('-'):
-            CONFIDENCE_THRESHOLD = max(0.01, CONFIDENCE_THRESHOLD - 0.05)
-            print(f" Confiança: {CONFIDENCE_THRESHOLD:.2f}")
-        elif key == ord('d'):
-            show_depth = not show_depth
-            status = "Ligado" if show_depth else "Desligado"
-            print(f" Depth view: {status}")
-
-except KeyboardInterrupt:
-    print("\n  Interrompido pelo usuário")
-
-except Exception as e:
-    print(f"\n❌ Erro: {e}")
-    import traceback
-    traceback.print_exc()
-
 finally:
-    pipeline.stop()
+    pipe.stop()
     cv2.destroyAllWindows()
-    print("\n✅ Pipeline encerrada")
-    print(" Resumo da sessão:")
-    print(f"   Total de frames: {frame_count}")
+    if ser:
+        ser.close()
+    print("\nSistema encerrado.")
