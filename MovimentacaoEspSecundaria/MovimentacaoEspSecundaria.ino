@@ -1,3 +1,4 @@
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -93,6 +94,19 @@ const unsigned long BUTTON_DEBOUNCE = 10;
 bool buttonWasPressed = false;
 String currentMovement = "";
 
+int gripperTarget = -1;
+int gripperCurrent = 80;
+unsigned long lastGripperStepTime = 0;
+const int GRIP_STEP = 3;
+const unsigned long GRIP_STEP_INTERVAL = 50;
+unsigned long gripStartTime = 0;
+const unsigned long GRIP_TIMEOUT = 1200;
+bool gripperMoving = false;
+
+// Flags para enviar ACK fora do callback
+bool sendAckPending = false;
+struct_message ackData;
+
 // Prototypes
 void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status);
 void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len);
@@ -119,6 +133,8 @@ void handleButtons();
 void updateMotorDirections(int dirC, int dirD);
 void controlGripper(int state);
 void handleSerialCommands();
+void requestGripperMove(int angle);
+void processGripperMovementLoop();
 
 // CALLBACKS ESP-NOW
 void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
@@ -127,82 +143,70 @@ void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
 }
 
 void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len) {
-    const uint8_t *mac = recv_info->src_addr;
-
     if (len < (int)sizeof(receivedData)) {
-        Serial.println("Tamanho de dados recebido inválido");
         return;
     }
     
     memcpy(&receivedData, incomingData, sizeof(receivedData));
-    receivedData.command[9] = '\0';
+    receivedData.command[sizeof(receivedData.command)-1] = '\0';
 
-    Serial.print("Comando recebido: ");
-    Serial.print(receivedData.command);
-    Serial.print(" - Valor: ");
-    Serial.println(receivedData.value);
-
-    // Processa os comandos recebidos
     if (strcmp(receivedData.command, "MOVE_Y") == 0) {
-        if(receivedData.value == 1) {
+        if (receivedData.value == 1) {
             moveLeft();
-            Serial.println("EIXO Y: Movendo para ESQUERDA");
+            movingToTargetY = false;
+            resettingY = false;
         } else if (receivedData.value == -1) {
             moveRight();
-            Serial.println("EIXO Y: Movendo para DIREITA");
+            movingToTargetY = false;
+            resettingY = false;
         }
     }
     else if (strcmp(receivedData.command, "MOVE_Z") == 0) {
-        if(receivedData.value == 1) {
+        if (receivedData.value == 1) {
             moveUp();
-            Serial.println("EIXO Z: Movendo para CIMA");
+            movingToTargetZ = false;
+            resettingZ = false;
         } else if (receivedData.value == -1) {
             moveDown();
-            Serial.println("EIXO Z: Movendo para BAIXO");
+            movingToTargetZ = false;
+            resettingZ = false;
         }
     }
     else if (strcmp(receivedData.command, "STOP_ALL") == 0) {
         stopAllMotors();
-        Serial.println("TODOS OS MOTORES: Parando");
+        movingToTargetY = false;
+        movingToTargetZ = false;
+        resettingY = false;
+        resettingZ = false;
     }
     else if (strcmp(receivedData.command, "GOTO_Y") == 0) {
         moveToPositionY(receivedData.position);
-        Serial.print("EIXO Y: Indo para posição ");
-        Serial.println(receivedData.position);
     }
     else if (strcmp(receivedData.command, "GOTO_Z") == 0) {
         moveToPositionZ(receivedData.position);
-        Serial.print("EIXO Z: Indo para posição ");
-        Serial.println(receivedData.position);
-    }
-    else if (strcmp(receivedData.command, "GRIP") == 0) {
-        controlGripper(receivedData.value);
-        if(receivedData.value == 1) {
-            Serial.println("GARRA: Abrindo");
-        } else {
-            Serial.println("GARRA: Fechando");
-        }
     }
     else if (strcmp(receivedData.command, "RESET_Y") == 0) {
         resetY();
-        Serial.println("EIXO Y: Iniciando reset");
     }
     else if (strcmp(receivedData.command, "RESET_Z") == 0) {
         resetZ();
-        Serial.println("EIXO Z: Iniciando reset");
     }
     else if (strcmp(receivedData.command, "RESET_ENC") == 0) {
         resetAllEncoders();
-        Serial.println("ENCODERS: Resetados");
+        memset(&ackData, 0, sizeof(ackData));
+        strncpy(ackData.command, "CONFIRM", sizeof(ackData.command)-1);
+        ackData.value = 0;
+        sendAckPending = true;
     }
     else if (strcmp(receivedData.command, "STATUS") == 0) {
-        printEncoderStatus();
+        memset(&ackData, 0, sizeof(ackData));
+        strncpy(ackData.command, "STATUS_REQ", sizeof(ackData.command)-1);
+        ackData.value = 0;
+        sendAckPending = true;
     }
-
-    // Envia confirmação
-    strcpy(myData.command, "CONFIRM");
-    myData.value = receivedData.value;
-    esp_now_send(broadcastAddress, (uint8_t *) &myData, sizeof(myData));
+    else if (strcmp(receivedData.command, "GRIP") == 0) {
+        requestGripperMove((int)receivedData.value);
+    }
 }
 
 // ==================== SETUP / LOOP ====================
@@ -269,6 +273,7 @@ void setup() {
 }
 
 void loop() {
+    
     handleSerialCommands();
     handleButtons();
 
@@ -301,6 +306,11 @@ void loop() {
             encoderC.contador = 0;
             interrupts();
             Serial.println("EIXO Y resetado - Posição definida como 0");
+            // Confirma reset por ACK
+            memset(&ackData, 0, sizeof(ackData));
+            strncpy(ackData.command, "CONFIRM", sizeof(ackData.command)-1);
+            ackData.value = 0;
+            sendAckPending = true;
         }
     }
 
@@ -313,15 +323,57 @@ void loop() {
             encoderD.contador = 0;
             interrupts();
             Serial.println("EIXO Z resetado - Posição definida como 0 (topo)");
+            // Confirma reset por ACK
+            memset(&ackData, 0, sizeof(ackData));
+            strncpy(ackData.command, "CONFIRM", sizeof(ackData.command)-1);
+            ackData.value = 0;
+            sendAckPending = true;
         }
     }
 
     // Verifica descida do eixo Z
     if (motorDirectionD == -1 && encoderD.contador >= Z_GROUND_POSITION) {
         stopMotorsZ();
-        Serial.println("EIXO Z: Chegou perto do chão - Parando");
+        Serial.println("EIXO Z: Chegou perto do chão - Parando");yy
+        memset(&ackData, 0, sizeof(ackData));
+        strncpy(ackData.command, "CONFIRM", sizeof(ackData.command)-1);
+        ackData.value = encoderD.contador;
+        sendAckPending = true;
     }
 
+    processGripperMovementLoop();
+
+    static unsigned long lastAckAttempt = 0;
+    static int ackRetries = 0;
+    const unsigned long ACK_RETRY_INTERVAL = 400;
+    const int ACK_MAX_RETRIES = 3;
+
+    if (sendAckPending) {
+        unsigned long now = millis();
+        if (now - lastAckAttempt >= ACK_RETRY_INTERVAL) {
+            lastAckAttempt = now;
+            esp_err_t r = esp_now_send(broadcastAddress, (uint8_t *)&ackData, sizeof(ackData));
+            if (r == ESP_OK) {
+                sendAckPending = false;
+                ackRetries = 0;
+                Serial.print("ACK enviado: ");
+                Serial.print(ackData.command);
+                Serial.print(" - ");
+                Serial.println(ackData.value);
+            } else {
+                ackRetries++;
+                Serial.print("Falha ao enviar ACK (tentativa ");
+                Serial.print(ackRetries);
+                Serial.print(") - erro: ");
+                Serial.println(r);
+                if (ackRetries >= ACK_MAX_RETRIES) {
+                    sendAckPending = false;
+                    ackRetries = 0;
+                    Serial.println("Desistindo de tentar enviar ACK depois de várias falhas.");
+                }
+            }
+        }
+    }
     delay(10);
 }
 
@@ -381,6 +433,54 @@ void resetZ() {
     moveUp();
 }
 
+void requestGripperMove(int angle) {
+    if (angle < 0) angle = 0;
+    if (angle > 180) angle = 180;
+    gripperTarget = angle;
+    gripperMoving = true;
+    gripStartTime = millis();
+    lastGripperStepTime = 0; // força passo imediato no loop
+}
+
+// Função que realiza os passos da garra
+void processGripperMovementLoop() {
+    if (!gripperMoving) return;
+
+    unsigned long now = millis();
+
+    if (now - gripStartTime > GRIP_TIMEOUT) {
+        gripperMoving = false;
+        memset(&ackData, 0, sizeof(ackData));
+        strncpy(ackData.command, "CONFIRM", sizeof(ackData.command)-1);
+        ackData.value = -1;
+        sendAckPending = true;
+        return;
+    }
+
+    if (now - lastGripperStepTime < GRIP_STEP_INTERVAL) return;
+    lastGripperStepTime = now;
+
+    if (gripperCurrent < gripperTarget) {
+        int next = gripperCurrent + GRIP_STEP;
+        if (next > gripperTarget) next = gripperTarget;
+        gripperCurrent = next;
+        gripperServo.write(gripperCurrent);
+    } else if (gripperCurrent > gripperTarget) {
+        int next = gripperCurrent - GRIP_STEP;
+        if (next < gripperTarget) next = gripperTarget;
+        gripperCurrent = next;
+        gripperServo.write(gripperCurrent);
+    }
+
+    if (gripperCurrent == gripperTarget) {
+        gripperMoving = false;
+        memset(&ackData, 0, sizeof(ackData));
+        strncpy(ackData.command, "CONFIRM", sizeof(ackData.command)-1);
+        ackData.value = gripperCurrent;
+        sendAckPending = true;
+    }
+}
+
 // Função para controle da garra
 void controlGripper(int state) {
     gripperServo.write(state);
@@ -391,8 +491,9 @@ void handleButtons() {
     if (millis() - lastButtonTime < BUTTON_DEBOUNCE) return;
 
     bool anyButtonPressed = (digitalRead(left) == LOW) ||
-                           (digitalRead(right) == LOW);
-                           (digitalRead(up) == LOW);
+                       (digitalRead(right) == LOW) ||
+                       (digitalRead(up) == LOW);
+
 
     if (!anyButtonPressed) {
         buttonWasPressed = false;
